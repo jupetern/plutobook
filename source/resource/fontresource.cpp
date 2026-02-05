@@ -270,7 +270,10 @@ static std::string buildVariationSettings(const FontDataDescription& description
 
 RefPtr<FontData> RemoteFontFace::getFontData(const FontDataDescription& description)
 {
-    const auto slopeAngle = -std::tan(description.request.slope * std::numbers::pi / 180.0);
+    const bool applySyntheticSlant = !m_styleRange
+        || description.request.slope < m_styleRange.minimum
+        || description.request.slope > m_styleRange.maximum;
+    const auto slopeAngle = applySyntheticSlant ? -std::tan(description.request.slope * std::numbers::pi / 180.0) : 0.0;
 
     cairo_matrix_t ctm;
     cairo_matrix_init_identity(&ctm);

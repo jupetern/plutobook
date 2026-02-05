@@ -327,22 +327,24 @@ inline RefPtr<LocalFontFace> LocalFontFace::create(const GlobalString& family, F
 
 class RemoteFontFace final : public FontFace {
 public:
-    static RefPtr<RemoteFontFace> create(FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, RefPtr<FontResource> resource);
+    static RefPtr<RemoteFontFace> create(FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, RefPtr<FontResource> resource, FontSelectionRange styleRange);
 
     RefPtr<FontData> getFontData(const FontDataDescription& description) final;
 
 private:
-    RemoteFontFace(FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, RefPtr<FontResource> resource)
+    RemoteFontFace(FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, RefPtr<FontResource> resource, FontSelectionRange styleRange)
         : FontFace(std::move(features), std::move(variations), std::move(ranges))
         , m_resource(std::move(resource))
+        , m_styleRange(styleRange)
     {}
 
     RefPtr<FontResource> m_resource;
+    FontSelectionRange m_styleRange;
 };
 
-inline RefPtr<RemoteFontFace> RemoteFontFace::create(FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, RefPtr<FontResource> resource)
+inline RefPtr<RemoteFontFace> RemoteFontFace::create(FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, RefPtr<FontResource> resource, FontSelectionRange styleRange)
 {
-    return adoptPtr(new RemoteFontFace(std::move(features), std::move(variations), std::move(ranges), std::move(resource)));
+    return adoptPtr(new RemoteFontFace(std::move(features), std::move(variations), std::move(ranges), std::move(resource), styleRange));
 }
 
 class SegmentedFontData;
