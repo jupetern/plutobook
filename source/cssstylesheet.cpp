@@ -932,6 +932,20 @@ public:
     GlobalString family() const;
     FontSelectionDescription description() const;
 
+    struct FontFaceSource {
+        enum class Type {
+            Local,
+            Url
+        };
+
+        Type type;
+        GlobalString localFamily;
+        Url url;
+        HeapString format;
+        bool hasFormat{false};
+    };
+
+    std::vector<FontFaceSource> sources() const;
     RefPtr<FontFace> build(Document* document) const;
 
 private:
@@ -944,6 +958,8 @@ private:
     RefPtr<CSSValue> m_variationSettings;
     RefPtr<CSSValue> m_unicodeRange;
 };
+
+static const HeapString& convertStringOrCustomIdent(const CSSValue& value);
 
 CSSFontFaceBuilder::CSSFontFaceBuilder(const CSSPropertyList& properties)
 {
@@ -1094,6 +1110,36 @@ FontSelectionDescription CSSFontFaceBuilder::description() const
     return FontSelectionDescription(weight(), stretch(), style());
 }
 
+std::vector<CSSFontFaceBuilder::FontFaceSource> CSSFontFaceBuilder::sources() const
+{
+    std::vector<FontFaceSource> sources;
+    if(m_src == nullptr)
+        return sources;
+    for(const auto& value : to<CSSListValue>(*m_src)) {
+        const auto& list = to<CSSListValue>(*value);
+        if(auto function = to<CSSUnaryFunctionValue>(list.at(0))) {
+            assert(function->id() == CSSFunctionID::Local);
+            const auto& family = to<CSSCustomIdentValue>(*function->value());
+            sources.push_back({FontFaceSource::Type::Local, family.value(), Url(), HeapString(), false});
+            continue;
+        }
+
+        const auto& url = to<CSSUrlValue>(*list.at(0));
+        FontFaceSource source{FontFaceSource::Type::Url, GlobalString(), url.value(), HeapString(), false};
+        if(list.size() == 2) {
+            const auto& function = to<CSSUnaryFunctionValue>(*list.at(1));
+            assert(function.id() == CSSFunctionID::Format);
+            const auto& format = convertStringOrCustomIdent(*function.value());
+            source.format = format;
+            source.hasFormat = true;
+        }
+
+        sources.push_back(std::move(source));
+    }
+
+    return sources;
+}
+
 static const HeapString& convertStringOrCustomIdent(const CSSValue& value)
 {
     if(is<CSSStringValue>(value))
@@ -1101,36 +1147,62 @@ static const HeapString& convertStringOrCustomIdent(const CSSValue& value)
     return to<CSSCustomIdentValue>(value).value();
 }
 
-RefPtr<FontFace> CSSFontFaceBuilder::build(Document* document) const
-{
-    if(m_src == nullptr)
-        return nullptr;
-    for(const auto& value : to<CSSListValue>(*m_src)) {
-        const auto& list = to<CSSListValue>(*value);
-        if(auto function = to<CSSUnaryFunctionValue>(list.at(0))) {
-            assert(function->id() == CSSFunctionID::Local);
-            const auto& family = to<CSSCustomIdentValue>(*function->value());
-            if(!fontDataCache()->isFamilyAvailable(family.value()))
-                continue;
-            return LocalFontFace::create(family.value(), featureSettings(), variationSettings(), unicodeRanges());
-        }
+class LazyFontFace final : public FontFace {
+public:
+    static RefPtr<LazyFontFace> create(Document* document, FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, std::vector<CSSFontFaceBuilder::FontFaceSource> sources)
+    {
+        return adoptPtr(new LazyFontFace(document, std::move(features), std::move(variations), std::move(ranges), std::move(sources)));
+    }
 
-        const auto& url = to<CSSUrlValue>(*list.at(0));
-        if(list.size() == 2) {
-            const auto& function = to<CSSUnaryFunctionValue>(*list.at(1));
-            assert(function.id() == CSSFunctionID::Format);
-            const auto& format = convertStringOrCustomIdent(*function.value());
-            if(!FontResource::supportsFormat(format.value())) {
-                continue;
+    RefPtr<FontData> getFontData(const FontDataDescription& description) final
+    {
+        resolve();
+        if(m_face == nullptr)
+            return nullptr;
+        return m_face->getFontData(description);
+    }
+
+private:
+    LazyFontFace(Document* document, FontFeatureList features, FontVariationList variations, UnicodeRangeList ranges, std::vector<CSSFontFaceBuilder::FontFaceSource> sources)
+        : FontFace(std::move(features), std::move(variations), std::move(ranges))
+        , m_document(document)
+        , m_sources(std::move(sources))
+    {}
+
+    void resolve()
+    {
+        if(m_resolved)
+            return;
+        m_resolved = true;
+        for(const auto& source : m_sources) {
+            if(source.type == CSSFontFaceBuilder::FontFaceSource::Type::Local) {
+                if(!fontDataCache()->isFamilyAvailable(source.localFamily))
+                    continue;
+                m_face = LocalFontFace::create(source.localFamily, m_features, m_variations, m_ranges);
+                return;
             }
-        }
 
-        if(auto fontResource = document->fetchFontResource(url.value())) {
-            return RemoteFontFace::create(featureSettings(), variationSettings(), unicodeRanges(), std::move(fontResource));
+            if(source.hasFormat && !FontResource::supportsFormat(source.format.value()))
+                continue;
+            if(auto fontResource = m_document->fetchFontResource(source.url)) {
+                m_face = RemoteFontFace::create(m_features, m_variations, m_ranges, std::move(fontResource));
+                return;
+            }
         }
     }
 
-    return nullptr;
+    Document* m_document{nullptr};
+    std::vector<CSSFontFaceBuilder::FontFaceSource> m_sources;
+    RefPtr<FontFace> m_face;
+    bool m_resolved{false};
+};
+
+RefPtr<FontFace> CSSFontFaceBuilder::build(Document* document) const
+{
+    auto list = sources();
+    if(list.empty())
+        return nullptr;
+    return LazyFontFace::create(document, featureSettings(), variationSettings(), unicodeRanges(), std::move(list));
 }
 
 void CSSStyleSheet::addFontFaceRule(const RefPtr<CSSFontFaceRule>& rule)
